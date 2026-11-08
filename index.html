@@ -821,7 +821,7 @@ window.addEventListener('load', function(){
 });
 </script>
 <script>
-var GKEY = 'AIzaSyBZLUiDJyIvhijgnDHQiYCDrob3uMo8hjc';
+var GKEY = 'AIzaSyAjpQJdyrADdUmOgNB5ncGjtyHqUHg59_4';
 
 /* ═══ RUNTIME BRIDGE-INDEX BY ROUTE ═══
    Build a complete route→bridges-sorted-by-SRMP index from ALL bridges
@@ -3824,17 +3824,56 @@ function submitReport() {
 </script>
 
 <script>
+/* Show Google's exact Maps error on screen, so no F12 console is needed.
+   Google calls gm_authFailure() and logs "Google Maps JavaScript API error: <Code>"
+   (in either order), so we capture the code from console.error and re-render. */
+var _gmErrorCode = null, _gmFailed = false;
+var _GM_FIXES = {
+  RefererNotAllowedMapError: location.protocol === 'file:'
+    ? 'You opened this file directly from your computer, and a website-restricted key can\'t allow that. Open your GitHub Pages link instead.'
+    : 'This website is not in your API key\'s allowed list. In Google Cloud → Credentials → your key → Websites, add: <b>' + location.origin + '/*</b>',
+  ApiNotActivatedMapError:   'The <b>Maps JavaScript API</b> is not enabled. Google Cloud → APIs &amp; Services → Library → enable Maps JavaScript API (and Places, Geocoding, Directions).',
+  BillingNotEnabledMapError: 'No billing account is linked to this Google Cloud project. Google Cloud → Billing → link a billing account (needed even for the free tier).',
+  ApiTargetBlockedMapError:  'Your key\'s <b>API restrictions</b> do not include Maps JavaScript API. Credentials → your key → API restrictions → add Maps JavaScript API.',
+  InvalidKeyMapError:        'The API key in this page is not valid. Copy the key again from Google Cloud → Credentials.',
+  MissingKeyMapError:        'No API key was sent. Check the key in the page\'s Google Maps script tag.',
+  ExpiredKeyMapError:        'This API key has expired. Create or renew the key in Google Cloud → Credentials.',
+  DeletedApiProjectMapError: 'The Google Cloud project for this key was deleted. Create a new project and key.',
+  OverQuotaMapError:         'The key has reached its usage limit. Check quotas in Google Cloud → APIs &amp; Services.'
+};
+function _renderGmError() {
+  var el = document.getElementById('map'); if (!el) return;
+  var code = _gmErrorCode;
+  var fix = code && _GM_FIXES[code] ? _GM_FIXES[code]
+          : 'Check that billing is linked, the 4 Maps APIs are enabled, and this website (<b>' + location.origin + '/*</b>) is allowed for the key.';
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px">'+
+    '<div style="max-width:440px;font-family:DM Sans,sans-serif;text-align:center;color:#1a1f2e">'+
+    '<div style="font-size:16px;font-weight:700;color:#e65100;margin-bottom:8px">&#x26A0; Google Maps failed to load</div>'+
+    (code ? '<div style="font-family:DM Mono,monospace;font-size:12px;background:#fff3e0;border:1px solid #ffcc80;border-radius:6px;padding:6px 10px;display:inline-block;margin-bottom:10px">' + code + '</div>' : '')+
+    '<div style="font-size:13px;line-height:1.55;color:#3d4a5c">' + fix + '</div>'+
+    '<div style="font-size:11px;color:#9aa5b8;margin-top:10px">Key changes can take up to 5 minutes. Then reload with Ctrl+F5.</div>'+
+    '</div></div>';
+}
+(function () {
+  var origErr = console.error;
+  console.error = function () {
+    try {
+      var msg = Array.prototype.join.call(arguments, ' ');
+      var m = msg.match(/Google Maps JavaScript API (?:error|warning):\s*([A-Za-z]+MapError)/);
+      if (m) { _gmErrorCode = m[1]; _gmFailed = true; _renderGmError(); }
+    } catch (e) {}
+    return origErr.apply(console, arguments);
+  };
+})();
 function gm_authFailure() {
-  document.getElementById('map').innerHTML = 
-    '<div style="display:flex;align-items:center;justify-content:center;height:100%;'+
-    'color:#f57c00;font-family:DM Sans,sans-serif;font-size:16px;text-align:center;padding:20px">'+
-    '&#x26A0; Google Maps failed to load.<br>Check API key restrictions and enabled APIs.<br>'+
-    'Open F12 Console for details.</div>';
+  _gmFailed = true;
+  _renderGmError();
 }
 </script>
 <script>window.initMap = initMap; window.initaMap = initMap; setTimeout(function(){ try { if (window.google && window.google.maps && typeof window.initMap === 'function' && !window.gmap) { window.initMap(); } } catch(e){ console.warn('init self-heal failed', e); } }, 1200);</script>
 <script
-  src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBZLUiDJyIvhijgnDHQiYCDrob3uMo8hjc&v=weekly&libraries=places&callback=initMap"
+  src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAjpQJdyrADdUmOgNB5ncGjtyHqUHg59_4&v=weekly&libraries=places&callback=initMap"
   async defer></script>
 </body>
 </html>
