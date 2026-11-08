@@ -1202,7 +1202,7 @@ function initMap() {
   }, 150);
 
 
-    directionsService = new google.maps.DirectionsService();
+    directionsService = new SBRoutesService();   /* Routes API, with legacy Directions fallback */
     /* Traffic layer disabled — green overlay conflicts with route coloring */
 
     function hideLoader() {
@@ -1437,7 +1437,7 @@ function runDiagnostics() {
       travelMode: google.maps.TravelMode.DRIVING
     }, function(res, st) {
       row('Directions (routing)', st==='OK'?'PASS':'FAIL',
-          st==='OK' ? res.routes[0].legs[0].distance.text + ' route returned' : 'Status: '+st+' — enable "Directions API" on your key');
+          st==='OK' ? res.routes[0].legs[0].distance.text + ' route returned' : 'Status: '+st+' — enable "Routes API" in Google Cloud and allow it on your key');
     });
   } catch(e) { row('Directions (routing)','FAIL', e.message); }
 
@@ -1951,7 +1951,7 @@ function handleRouteFailure(status) {
     return true;
   }
   if (status === 'REQUEST_DENIED') {
-    showNotif('Routing was refused — check that the Directions API is enabled for your API key.', 'error');
+    showNotif('Routing was refused — enable the Routes API in Google Cloud and allow it in your API key restrictions.', 'error');
     return true;
   }
   return false;
@@ -3111,6 +3111,184 @@ function updateDist() {
   document.getElementById('stDst').textContent =
     haverMi(myLat,myLng,dest.lat(),dest.lng()).toFixed(1);
 }
+/* ═══ ROUTES API ADAPTER ═════════════════════════════════════════════
+   Google no longer offers the legacy Directions API to new projects.
+   SBRoutesService keeps the same .route(request, callback) interface the
+   app already uses, but calls the Routes API (routes.googleapis.com) and
+   converts its answer into the DirectionsResult shape the app reads:
+   routes[].legs[].steps[] with path, instructions, maneuver, distance,
+   duration, start_location / end_location, plus overview_path and summary.
+   If the Routes API is refused, it tries the legacy Directions service once,
+   so keys that still have Directions enabled keep working.
+═══════════════════════════════════════════════════════════════════════ */
+function _sbMapsKey() {
+  var s = document.querySelector('script[src*="maps.googleapis.com/maps/api/js"]');
+  var m = s && s.src.match(/[?&]key=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+function _sbDecodePolyline(str) {
+  var pts = [], index = 0, lat = 0, lng = 0;
+  while (str && index < str.length) {
+    var b, shift = 0, result = 0;
+    do { b = str.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do { b = str.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    pts.push(new google.maps.LatLng(lat / 1e5, lng / 1e5));
+  }
+  return pts;
+}
+
+function _sbSeconds(d) { var m = String(d || '').match(/^(\d+(?:\.\d+)?)s$/); return m ? Math.round(+m[1]) : 0; }
+function _sbDurText(sec) {
+  var h = Math.floor(sec / 3600), mn = Math.round((sec % 3600) / 60);
+  if (h) return h + ' hr ' + mn + ' min';
+  return Math.max(1, mn) + ' min';
+}
+function _sbDistText(m) {
+  var mi = m / 1609.344;
+  return mi < 0.1 ? Math.round(m * 3.28084) + ' ft' : (mi < 10 ? mi.toFixed(1) : Math.round(mi)) + ' mi';
+}
+function _sbLL(loc) {
+  var ll = loc && (loc.latLng || loc);
+  return (ll && ll.latitude != null) ? new google.maps.LatLng(ll.latitude, ll.longitude) : null;
+}
+function _sbWaypoint(p) {
+  if (p == null) return null;
+  if (typeof p === 'string') return { address: p };
+  if (p.location) p = p.location;
+  if (p.geometry && p.geometry.location) p = p.geometry.location;
+  var lat = typeof p.lat === 'function' ? p.lat() : p.lat;
+  var lng = typeof p.lng === 'function' ? p.lng() : p.lng;
+  if (lat == null || lng == null) return null;
+  return { location: { latLng: { latitude: +lat, longitude: +lng } } };
+}
+var _SB_MANEUVER = {
+  TURN_LEFT:'turn-left', TURN_RIGHT:'turn-right', TURN_SLIGHT_LEFT:'turn-slight-left', TURN_SLIGHT_RIGHT:'turn-slight-right',
+  TURN_SHARP_LEFT:'turn-sharp-left', TURN_SHARP_RIGHT:'turn-sharp-right', UTURN_LEFT:'uturn-left', UTURN_RIGHT:'uturn-right',
+  STRAIGHT:'straight', RAMP_LEFT:'ramp-left', RAMP_RIGHT:'ramp-right', MERGE:'merge', FORK_LEFT:'fork-left', FORK_RIGHT:'fork-right',
+  ROUNDABOUT_LEFT:'roundabout-left', ROUNDABOUT_RIGHT:'roundabout-right', FERRY:'ferry', FERRY_TRAIN:'ferry-train'
+};
+
+function _sbConvertRoute(r) {
+  var legs = (r.legs || []).map(function(leg) {
+    var steps = (leg.steps || []).map(function(st) {
+      var path = _sbDecodePolyline(st.polyline && st.polyline.encodedPolyline);
+      var ni = st.navigationInstruction || {};
+      var sec = _sbSeconds(st.staticDuration);
+      var dm = st.distanceMeters || 0;
+      return {
+        instructions: String(ni.instructions || '').replace(/\s*\n\s*/g, ' '),
+        maneuver: _SB_MANEUVER[ni.maneuver] || '',
+        path: path, lat_lngs: path,
+        start_location: _sbLL(st.startLocation) || path[0] || null,
+        end_location: _sbLL(st.endLocation) || path[path.length - 1] || null,
+        distance: { value: dm, text: _sbDistText(dm) },
+        duration: { value: sec, text: _sbDurText(sec) },
+        travel_mode: 'DRIVING'
+      };
+    });
+    var lsec = _sbSeconds(leg.staticDuration || leg.duration), ltraffic = _sbSeconds(leg.duration);
+    var ldm = leg.distanceMeters || 0;
+    var out = {
+      steps: steps,
+      distance: { value: ldm, text: _sbDistText(ldm) },
+      duration: { value: lsec, text: _sbDurText(lsec) },
+      start_location: _sbLL(leg.startLocation) || (steps[0] && steps[0].start_location),
+      end_location: _sbLL(leg.endLocation) || (steps.length && steps[steps.length - 1].end_location),
+      start_address: '', end_address: ''
+    };
+    if (leg.duration && ltraffic) out.duration_in_traffic = { value: ltraffic, text: _sbDurText(ltraffic) };
+    return out;
+  });
+  var overview = _sbDecodePolyline(r.polyline && r.polyline.encodedPolyline);
+  var bounds = new google.maps.LatLngBounds();
+  overview.forEach(function(p) { bounds.extend(p); });
+  return {
+    legs: legs,
+    overview_path: overview,
+    summary: r.description || '',
+    warnings: r.warnings || [],
+    bounds: bounds,
+    waypoint_order: []
+  };
+}
+
+function SBRoutesService() { this._legacy = null; this.lastBackend = null; }
+SBRoutesService.prototype.route = function(req, cb) {
+  var self = this;
+  var origin = _sbWaypoint(req.origin), destination = _sbWaypoint(req.destination);
+  if (!origin || !destination) { setTimeout(function() { cb(null, 'INVALID_REQUEST'); }, 0); return; }
+  var wps = (req.waypoints || []).map(function(w) {
+    var p = _sbWaypoint(w.location || w);
+    if (p && w.stopover === false) p.via = true;
+    return p;
+  }).filter(Boolean);
+
+  var body = {
+    origin: origin,
+    destination: destination,
+    travelMode: 'DRIVE',
+    routingPreference: 'TRAFFIC_AWARE',
+    languageCode: 'en-US',
+    units: 'IMPERIAL',
+    routeModifiers: { avoidHighways: !!req.avoidHighways, avoidTolls: !!req.avoidTolls, avoidFerries: !!req.avoidFerries }
+  };
+  if (wps.length) body.intermediates = wps;
+  else if (req.provideRouteAlternatives) body.computeAlternativeRoutes = true;  /* not allowed with intermediates */
+
+  var fieldMask = [
+    'routes.description', 'routes.warnings', 'routes.distanceMeters', 'routes.duration', 'routes.staticDuration',
+    'routes.polyline.encodedPolyline',
+    'routes.legs.distanceMeters', 'routes.legs.duration', 'routes.legs.staticDuration',
+    'routes.legs.startLocation', 'routes.legs.endLocation',
+    'routes.legs.steps.distanceMeters', 'routes.legs.steps.staticDuration', 'routes.legs.steps.polyline.encodedPolyline',
+    'routes.legs.steps.startLocation', 'routes.legs.steps.endLocation', 'routes.legs.steps.navigationInstruction'
+  ].join(',');
+
+  function useLegacy(routesStatus, detail) {
+    if (!(window.google && google.maps && google.maps.DirectionsService)) { cb(null, routesStatus); return; }
+    try {
+      self._legacy = self._legacy || new google.maps.DirectionsService();
+      self._legacy.route(req, function(res, st) {
+        if (st === 'OK') { self.lastBackend = 'directions-legacy'; cb(res, st); return; }
+        if (detail) console.warn('[SmartBridge] Routes API: ' + detail);
+        cb(null, routesStatus);   /* report the Routes API problem — that is the one to fix */
+      });
+    } catch (e) { cb(null, routesStatus); }
+  }
+
+  fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': _sbMapsKey(), 'X-Goog-FieldMask': fieldMask },
+    body: JSON.stringify(body)
+  }).then(function(resp) {
+    return resp.text().then(function(txt) {
+      var data = {}; try { data = JSON.parse(txt || '{}'); } catch (e) {}
+      return { status: resp.status, data: data };
+    });
+  }).then(function(r) {
+    if (r.status === 200) {
+      var routes = (r.data.routes || []).map(_sbConvertRoute).filter(function(x) { return x.legs.length; });
+      if (!routes.length) { cb(null, 'ZERO_RESULTS'); return; }
+      self.lastBackend = 'routes-api';
+      cb({ routes: routes, request: req, geocoded_waypoints: [] }, 'OK');
+      return;
+    }
+    var msg = (r.data.error && r.data.error.message) || ('HTTP ' + r.status);
+    if (r.status === 429) { cb(null, 'OVER_QUERY_LIMIT'); return; }
+    if (r.status === 403 || r.status === 401) { useLegacy('REQUEST_DENIED', msg); return; }
+    if (r.status === 400 && /not found|no route|ZERO/i.test(msg)) { cb(null, 'ZERO_RESULTS'); return; }
+    console.warn('[SmartBridge] Routes API error:', msg);
+    cb(null, r.status === 400 ? 'INVALID_REQUEST' : 'UNKNOWN_ERROR');
+  }).catch(function(err) {
+    console.warn('[SmartBridge] Routes API network error:', err);
+    cb(null, 'UNKNOWN_ERROR');
+  });
+};
+
 function buildRequestOptions(origin, destination, includeAlternatives, waypoints) {
   var opts = {
     origin: origin,
@@ -3832,7 +4010,7 @@ var _GM_FIXES = {
   RefererNotAllowedMapError: location.protocol === 'file:'
     ? 'You opened this file directly from your computer, and a website-restricted key can\'t allow that. Open your GitHub Pages link instead.'
     : 'This website is not in your API key\'s allowed list. In Google Cloud → Credentials → your key → Websites, add: <b>' + location.origin + '/*</b>',
-  ApiNotActivatedMapError:   'The <b>Maps JavaScript API</b> is not enabled. Google Cloud → APIs &amp; Services → Library → enable Maps JavaScript API (and Places, Geocoding, Directions).',
+  ApiNotActivatedMapError:   'The <b>Maps JavaScript API</b> is not enabled. Google Cloud → APIs &amp; Services → Library → enable Maps JavaScript API (and Places, Geocoding, Routes).',
   BillingNotEnabledMapError: 'No billing account is linked to this Google Cloud project. Google Cloud → Billing → link a billing account (needed even for the free tier).',
   ApiTargetBlockedMapError:  'Your key\'s <b>API restrictions</b> do not include Maps JavaScript API. Credentials → your key → API restrictions → add Maps JavaScript API.',
   InvalidKeyMapError:        'The API key in this page is not valid. Copy the key again from Google Cloud → Credentials.',
@@ -3845,7 +4023,7 @@ function _renderGmError() {
   var el = document.getElementById('map'); if (!el) return;
   var code = _gmErrorCode;
   var fix = code && _GM_FIXES[code] ? _GM_FIXES[code]
-          : 'Check that billing is linked, the 4 Maps APIs are enabled, and this website (<b>' + location.origin + '/*</b>) is allowed for the key.';
+          : 'Check that billing is linked, Maps JavaScript, Places, Geocoding and Routes APIs are enabled, and this website (<b>' + location.origin + '/*</b>) is allowed for the key.';
   el.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px">'+
     '<div style="max-width:440px;font-family:DM Sans,sans-serif;text-align:center;color:#1a1f2e">'+
