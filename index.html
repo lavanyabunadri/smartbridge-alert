@@ -3943,76 +3943,15 @@ function drawCandidatePolylines() {
       return;
     }
 
-    /* ── Active route: segment-colored polyline ──────────────────────────
-       Draw cyan baseline first, then overlay red "danger zones" 2 miles
-       before each critical bridge on the route.                          */
-
-    /* 1. Full cyan baseline */
+    /* ── Active route: a single blue line ── */
     routePolyline = new google.maps.Polyline({
       path: path, map: gmap,
       strokeColor: '#0062ff', strokeWeight: weight,
       strokeOpacity: opacity, zIndex: 4
     });
 
-    /* 2. Compute danger zones — red segments 2 miles before each crit bridge */
-    var critBridges = c.bridges.filter(function(b){ return getSev(b)==='crit'; });
-    critBridges.forEach(function(br){
-      var brIdx = br.segIdx;
-      /* Walk backwards along path 2 miles before bridge */
-      var twoMiInM = 2 * 1609.34; // 2 miles in meters (~3218m)
-      var accumulated = 0;
-      var startIdx = brIdx;
-      for (var i = brIdx; i > 0; i--) {
-        var a = path[i], b2 = path[i-1];
-        if (!a || !b2) break;
-        var segM = haverMi(a.lat(),a.lng(),b2.lat(),b2.lng()) * 1609.34;
-        accumulated += segM;
-        if (accumulated >= twoMiInM) { startIdx = i-1; break; }
-        startIdx = i-1;
-      }
-      /* Extract the danger zone path segment */
-      var dangerPath = path.slice(startIdx, brIdx + 1);
-      if (dangerPath.length < 2) return;
-      var dangerPoly = new google.maps.Polyline({
-        path: dangerPath, map: gmap,
-        strokeColor: '#ff3333', strokeWeight: weight + 1,
-        strokeOpacity: 0.95, zIndex: 6
-      });
-      altRoutePolylines.push(dangerPoly);
-
-      /* Pulsing warning zone — slightly wider translucent overlay */
-      var warnPoly = new google.maps.Polyline({
-        path: dangerPath, map: gmap,
-        strokeColor: '#ff3333', strokeWeight: weight + 6,
-        strokeOpacity: 0.18, zIndex: 5
-      });
-      altRoutePolylines.push(warnPoly);
-    });
-
-    /* 3. For warn-only bridges add a gentler orange approach zone (1 mile) */
-    var warnBridges = c.bridges.filter(function(b){ return getSev(b)==='warn'; });
-    warnBridges.forEach(function(br){
-      var brIdx = br.segIdx;
-      var oneMiInM = 1609.34;
-      var accumulated = 0;
-      var startIdx = brIdx;
-      for (var i = brIdx; i > 0; i--) {
-        var a = path[i], b2 = path[i-1];
-        if (!a || !b2) break;
-        var segM = haverMi(a.lat(),a.lng(),b2.lat(),b2.lng()) * 1609.34;
-        accumulated += segM;
-        if (accumulated >= oneMiInM) { startIdx = i-1; break; }
-        startIdx = i-1;
-      }
-      var warnPath = path.slice(startIdx, brIdx + 1);
-      if (warnPath.length < 2) return;
-      var wPoly = new google.maps.Polyline({
-        path: warnPath, map: gmap,
-        strokeColor: '#ff9100', strokeWeight: weight + 1,
-        strokeOpacity: 0.85, zIndex: 6
-      });
-      altRoutePolylines.push(wPoly);
-    });
+    /* Bridges are marked by their own red/orange markers; the route line
+       itself stays one colour so it is not mistaken for traffic. */
   });
 }
 
